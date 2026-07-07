@@ -16,27 +16,47 @@ function Chat() {
   const endRef = useRef(null);
 
   useEffect(() => {
-    socketRef.current = io('http://localhost:3001');
+    // Initialize socket
+    socketRef.current = io('https://tinkoff-match-backend.onrender.com', {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
+    });
+
     fetchData();
     
+    // Listen for messages
+    socketRef.current.on('connect', () => {
+      console.log('Socket connected:', socketRef.current.id);
+      socketRef.current.emit('join_chat', matchId);
+    });
+
     socketRef.current.on('receive_message', (msg) => {
+      console.log('Received message:', msg);
       setMessages((prev) => {
-        if (prev.find(m => m.id === msg.id)) return prev;
-        return [...prev, msg];
+        // Check for duplicates
+        const exists = prev.find(m => m.id === msg.id);
+        if (exists) {
+          console.log('Duplicate message, skipping');
+          return prev;
+        }
+        const newMessages = [...prev, msg];
+        console.log('New messages:', newMessages);
+        return newMessages;
       });
+    });
+
+    socketRef.current.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
     });
 
     return () => {
       if (socketRef.current) {
+        console.log('Disconnecting socket...');
         socketRef.current.disconnect();
       }
     };
-  }, [matchId]);
-
-  useEffect(() => {
-    if (socketRef.current && matchId) {
-      socketRef.current.emit('join_chat', matchId);
-    }
   }, [matchId]);
 
   useEffect(() => {
@@ -72,9 +92,9 @@ function Chat() {
       
       setOtherUser(other);
       setMessages(messagesRes.data || []);
+      setLoading(false);
     } catch (e) {
       console.error('Error:', e);
-    } finally {
       setLoading(false);
     }
   };
@@ -85,16 +105,27 @@ function Chat() {
 
     try {
       const res = await api.post('/messages/' + matchId, { text: newMsg });
-      if (socketRef.current) {
-        socketRef.current.emit('send_message', { matchId, message: res.data });
+      console.log('Message sent:', res.data);
+      
+      // Emit via socket
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('send_message', { 
+          matchId, 
+          message: res.data 
+        });
+        console.log('Emitted message via socket');
+      } else {
+        console.log('Socket not connected, adding message directly');
+        setMessages(prev => [...prev, res.data]);
       }
+      
       setNewMsg('');
     } catch (e) {
-      console.error('Error:', e);
+      console.error('Error sending:', e);
+      alert('Не удалось отправить сообщение');
     }
   };
 
-  // Format time safely
   const formatTime = (dateString) => {
     try {
       if (!dateString) return '';
@@ -140,15 +171,15 @@ function Chat() {
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       <div className="navbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <button onClick={() => navigate('/matches')} style={{ background: '#f5f5f5', border: 'none', width: '36px', height: '36px', borderRadius: '10px', cursor: 'pointer', fontSize: '18px' }}>←</button>
-          <div>
-            <div style={{ fontWeight: '600', fontSize: '15px' }}>{otherUser.name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+          <button onClick={() => navigate('/matches')} style={{ background: '#f5f5f5', border: 'none', width: '36px', height: '36px', borderRadius: '10px', cursor: 'pointer', fontSize: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>←</button>
+          <div style={{ overflow: 'hidden' }}>
+            <div style={{ fontWeight: '600', fontSize: '15px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{otherUser.name}</div>
             <div style={{ fontSize: '12px', color: '#888' }}>{otherUser.department || 'Онлайн'}</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ width: '8px', height: '8px', background: '#4CAF50', borderRadius: '50%' }}></span>
+          <span style={{ width: '8px', height: '8px', background: '#4CAF50', borderRadius: '50%', display: 'inline-block' }}></span>
           <span style={{ fontSize: '13px', color: '#4CAF50' }}>Онлайн</span>
         </div>
       </div>
@@ -194,12 +225,14 @@ function Chat() {
                 {!isMine && !showAvatar && <div style={{ width: '40px', flexShrink: 0 }}></div>}
                 
                 <div style={{
-                  maxWidth: '65%',
+                  maxWidth: '70%',
                   padding: '12px 16px',
                   borderRadius: isMine ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
                   background: isMine ? '#FFDD2D' : 'white',
                   color: '#333',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.08)'
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                  wordWrap: 'break-word',
+                  whiteSpace: 'pre-wrap'
                 }}>
                   <p style={{ fontSize: '15px', lineHeight: '1.5', margin: 0 }}>{msg.text}</p>
                   {time && (
@@ -228,12 +261,13 @@ function Chat() {
               border: '1px solid #e0e0e0', 
               borderRadius: '14px', 
               fontSize: '15px', 
-              background: '#fafafa'
+              background: '#fafafa',
+              minWidth: 0
             }}
             onFocus={e => { e.target.style.borderColor = '#FFDD2D'; e.target.style.background = 'white'; }}
             onBlur={e => { e.target.style.borderColor = '#e0e0e0'; e.target.style.background = '#fafafa'; }}
           />
-          <button type="submit" className="btn" style={{ borderRadius: '14px', padding: '14px 24px', fontSize: '18px' }} disabled={!newMsg.trim()}>
+          <button type="submit" className="btn" style={{ borderRadius: '14px', padding: '14px 24px', fontSize: '18px', flexShrink: 0 }} disabled={!newMsg.trim()}>
             →
           </button>
         </form>
